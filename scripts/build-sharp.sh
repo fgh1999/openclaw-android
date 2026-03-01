@@ -15,7 +15,6 @@ export TMPDIR="${TMPDIR:-$PREFIX/tmp}"
 export TMP="$TMPDIR"
 export TEMP="$TMPDIR"
 export CONTAINER="${CONTAINER:-1}"
-export NODE_OPTIONS="${NODE_OPTIONS:--r $HOME/.openclaw-android/patches/bionic-compat.js}"
 
 # Locate openclaw install directory
 OPENCLAW_DIR="$(npm root -g)/openclaw"
@@ -58,9 +57,13 @@ fi
 echo -e "${GREEN}[OK]${NC}   node-gyp installed"
 
 # Set build environment variables
-export CFLAGS="-Wno-error=implicit-function-declaration"
-export CXXFLAGS="-include $HOME/.openclaw-android/patches/termux-compat.h"
-export GYP_DEFINES="OS=linux android_ndk_path=$PREFIX"
+# On glibc architecture, these are handled by glibc's standard headers.
+# On Bionic (legacy), we need explicit compatibility flags.
+if [ ! -f "$HOME/.openclaw-android/.glibc-arch" ]; then
+    export CFLAGS="-Wno-error=implicit-function-declaration"
+    export CXXFLAGS="-include $HOME/.openclaw-android/patches/termux-compat.h"
+    export GYP_DEFINES="OS=linux android_ndk_path=$PREFIX"
+fi
 export CPATH="$PREFIX/include/glib-2.0:$PREFIX/lib/glib-2.0/include"
 
 echo "Rebuilding sharp in $OPENCLAW_DIR..."

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify-install.sh - Verify OpenClaw installation on Termux
+# verify-install.sh - Verify OpenClaw installation on Termux (glibc architecture)
 set -euo pipefail
 
 RED='\033[0;31m'
@@ -69,37 +69,46 @@ else
     check_fail "TMPDIR not set"
 fi
 
-if [ -n "${NODE_OPTIONS:-}" ]; then
-    check_pass "NODE_OPTIONS is set"
-else
-    check_fail "NODE_OPTIONS not set"
-fi
-
 if [ "${CONTAINER:-}" = "1" ]; then
     check_pass "CONTAINER=1 (systemd bypass)"
 else
     check_warn "CONTAINER not set"
 fi
 
-# 5. Patch files
-COMPAT_FILE="$HOME/.openclaw-android/patches/bionic-compat.js"
+if [ "${OA_GLIBC:-}" = "1" ]; then
+    check_pass "OA_GLIBC=1 (glibc architecture)"
+else
+    check_fail "OA_GLIBC not set"
+fi
+
+# 5. glibc components
+COMPAT_FILE="$HOME/.openclaw-android/patches/glibc-compat.js"
 if [ -f "$COMPAT_FILE" ]; then
-    check_pass "bionic-compat.js exists"
+    check_pass "glibc-compat.js exists"
 else
-    check_fail "bionic-compat.js not found at $COMPAT_FILE"
+    check_fail "glibc-compat.js not found at $COMPAT_FILE"
 fi
 
-COMPAT_HEADER="$HOME/.openclaw-android/patches/termux-compat.h"
-if [ -f "$COMPAT_HEADER" ]; then
-    check_pass "termux-compat.h exists"
+GLIBC_MARKER="$HOME/.openclaw-android/.glibc-arch"
+if [ -f "$GLIBC_MARKER" ]; then
+    check_pass "glibc architecture marker (.glibc-arch)"
 else
-    check_fail "termux-compat.h not found at $COMPAT_HEADER"
+    check_fail "glibc architecture marker not found"
 fi
 
-if [ -n "${CXXFLAGS:-}" ]; then
-    check_pass "CXXFLAGS is set"
+GLIBC_LDSO="${PREFIX:-}/glibc/lib/ld-linux-aarch64.so.1"
+if [ -f "$GLIBC_LDSO" ]; then
+    check_pass "glibc dynamic linker (ld-linux-aarch64.so.1)"
 else
-    check_warn "CXXFLAGS not set (native module builds may fail)"
+    check_fail "glibc dynamic linker not found at $GLIBC_LDSO"
+fi
+
+# Check glibc node wrapper (should be a bash script, not a binary)
+NODE_WRAPPER="$HOME/.openclaw-android/node/bin/node"
+if [ -f "$NODE_WRAPPER" ] && head -1 "$NODE_WRAPPER" 2>/dev/null | grep -q "bash"; then
+    check_pass "glibc node wrapper script"
+else
+    check_fail "glibc node wrapper not found or not a wrapper script"
 fi
 
 # 6. Directories
@@ -111,7 +120,7 @@ for DIR in "$HOME/.openclaw-android" "$HOME/.openclaw" "$PREFIX/tmp"; do
     fi
 done
 
-# 7. code-server
+# 7. code-server (non-critical)
 if command -v code-server &>/dev/null; then
     CS_VER=$(code-server --version 2>/dev/null | head -1 || true)
     if [ -n "$CS_VER" ]; then
@@ -123,7 +132,14 @@ else
     check_warn "code-server not installed (non-critical)"
 fi
 
-# 8. .bashrc contains env block
+# 8. OpenCode command (non-critical)
+if command -v opencode &>/dev/null; then
+    check_pass "opencode command available"
+else
+    check_warn "opencode not installed (non-critical)"
+fi
+
+# 9. .bashrc contains env block
 if grep -qF "OpenClaw on Android" "$HOME/.bashrc" 2>/dev/null; then
     check_pass ".bashrc contains environment block"
 else
