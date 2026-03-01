@@ -59,7 +59,45 @@ rmdir "$HOME/.local/bin" 2>/dev/null || true
 rmdir "$HOME/.local/lib" 2>/dev/null || true
 rmdir "$HOME/.local" 2>/dev/null || true
 
-# 3. Remove oa and oaupdate commands
+# 3. Stop and remove OpenCode / oh-my-opencode
+echo ""
+echo "Removing OpenCode + oh-my-opencode..."
+
+# Stop OpenCode if running
+if pgrep -f "ld.so.opencode" &>/dev/null; then
+    pkill -f "ld.so.opencode" 2>/dev/null || true
+    echo -e "${GREEN}[OK]${NC}   Stopped running OpenCode"
+fi
+
+# Remove ld.so concatenation files
+for ldso_file in "$PREFIX/tmp/ld.so.opencode" "$PREFIX/tmp/ld.so.omo"; do
+    if [ -f "$ldso_file" ]; then
+        rm -f "$ldso_file"
+        echo -e "${GREEN}[OK]${NC}   Removed $ldso_file"
+    fi
+done
+
+# Remove wrapper scripts
+for wrapper in "$PREFIX/bin/opencode" "$PREFIX/bin/oh-my-opencode"; do
+    if [ -f "$wrapper" ]; then
+        rm -f "$wrapper"
+        echo -e "${GREEN}[OK]${NC}   Removed $wrapper"
+    fi
+done
+
+# Remove OpenCode config
+if [ -d "$HOME/.config/opencode" ]; then
+    rm -rf "$HOME/.config/opencode"
+    echo -e "${GREEN}[OK]${NC}   Removed ~/.config/opencode"
+fi
+
+# Remove Bun installation (used to install OpenCode packages)
+if [ -d "$HOME/.bun" ]; then
+    rm -rf "$HOME/.bun"
+    echo -e "${GREEN}[OK]${NC}   Removed ~/.bun"
+fi
+
+# 4. Remove oa and oaupdate commands
 if [ -f "$PREFIX/bin/oa" ]; then
     rm -f "$PREFIX/bin/oa"
     echo -e "${GREEN}[OK]${NC}   Removed $PREFIX/bin/oa"
@@ -74,7 +112,19 @@ else
     echo -e "${YELLOW}[SKIP]${NC} $PREFIX/bin/oaupdate not found"
 fi
 
-# 4. Remove openclaw-android directory
+# 5. Remove glibc components (proot rootfs is inside openclaw-android dir)
+echo ""
+echo "Removing glibc components..."
+
+# Remove pacman glibc-runner package (non-critical if fails)
+if command -v pacman &>/dev/null; then
+    if pacman -Q glibc-runner &>/dev/null 2>&1; then
+        pacman -R glibc-runner --noconfirm 2>/dev/null || true
+        echo -e "${GREEN}[OK]${NC}   Removed glibc-runner package"
+    fi
+fi
+
+# 6. Remove openclaw-android directory (includes node, proot-root, patches, .glibc-arch)
 if [ -d "$HOME/.openclaw-android" ]; then
     rm -rf "$HOME/.openclaw-android"
     echo -e "${GREEN}[OK]${NC}   Removed $HOME/.openclaw-android"
@@ -82,7 +132,7 @@ else
     echo -e "${YELLOW}[SKIP]${NC} $HOME/.openclaw-android not found"
 fi
 
-# 5. Remove environment block from .bashrc
+# 7. Remove environment block from .bashrc
 BASHRC="$HOME/.bashrc"
 MARKER_START="# >>> OpenClaw on Android >>>"
 MARKER_END="# <<< OpenClaw on Android <<<"
@@ -96,13 +146,13 @@ else
     echo -e "${YELLOW}[SKIP]${NC} No environment block found in $BASHRC"
 fi
 
-# 6. Clean up temp directory
+# 8. Clean up temp directory
 if [ -d "$PREFIX/tmp/openclaw" ]; then
     rm -rf "$PREFIX/tmp/openclaw"
     echo -e "${GREEN}[OK]${NC}   Removed $PREFIX/tmp/openclaw"
 fi
 
-# 7. Optionally remove openclaw data
+# 9. Optionally remove openclaw data
 echo ""
 if [ -d "$HOME/.openclaw" ]; then
     read -rp "Remove OpenClaw data directory ($HOME/.openclaw)? [y/N] " REPLY

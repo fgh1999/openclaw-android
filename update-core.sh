@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # update-core.sh - Lightweight updater for OpenClaw on Android (existing installations)
 # Called by update.sh (thin wrapper) or oaupdate command
+# Supports both Bionic (pre-1.0.0) and glibc (1.0.0+) architectures.
+# Bionic installations are migrated to glibc automatically.
 set -euo pipefail
 
 RED='\033[0;31m'
@@ -11,7 +13,7 @@ NC='\033[0m'
 
 REPO_BASE="https://raw.githubusercontent.com/AidanPark/openclaw-android/main"
 OPENCLAW_DIR="$HOME/.openclaw-android"
-OA_VERSION="0.8.2"
+OA_VERSION="1.0.0"
 
 echo ""
 echo -e "${BOLD}========================================${NC}"
@@ -62,6 +64,15 @@ fi
 if ! command -v curl &>/dev/null; then
     echo -e "${RED}[FAIL]${NC} curl not found. Install it with: pkg install curl"
     exit 1
+fi
+
+# Detect architecture: glibc vs Bionic
+IS_GLIBC=false
+if [ -f "$OPENCLAW_DIR/.glibc-arch" ]; then
+    IS_GLIBC=true
+    echo -e "${GREEN}[OK]${NC}   Architecture: glibc"
+else
+    echo -e "${YELLOW}[INFO]${NC} Architecture: Bionic (will migrate to glibc)"
 fi
 
 # Check Phantom Process Killer (Android 12+, API 31+)
@@ -153,19 +164,12 @@ else
     exit 1
 fi
 
-# Download bionic-compat.js (patches may have been updated)
+# Download glibc-compat.js (replaces bionic-compat.js)
 mkdir -p "$OPENCLAW_DIR/patches"
-if curl -sfL "$REPO_BASE/patches/bionic-compat.js" -o "$OPENCLAW_DIR/patches/bionic-compat.js"; then
-    echo -e "${GREEN}[OK]${NC}   bionic-compat.js updated"
+if curl -sfL "$REPO_BASE/patches/glibc-compat.js" -o "$OPENCLAW_DIR/patches/glibc-compat.js"; then
+    echo -e "${GREEN}[OK]${NC}   glibc-compat.js updated"
 else
-    echo -e "${YELLOW}[WARN]${NC} Failed to download bionic-compat.js (non-critical)"
-fi
-
-# Download termux-compat.h (native build compatibility)
-if curl -sfL "$REPO_BASE/patches/termux-compat.h" -o "$OPENCLAW_DIR/patches/termux-compat.h"; then
-    echo -e "${GREEN}[OK]${NC}   termux-compat.h updated"
-else
-    echo -e "${YELLOW}[WARN]${NC} Failed to download termux-compat.h (non-critical)"
+    echo -e "${YELLOW}[WARN]${NC} Failed to download glibc-compat.js (non-critical)"
 fi
 
 # Install spawn.h stub if missing (needed for koffi/native module builds)
@@ -238,6 +242,36 @@ else
     echo -e "${YELLOW}[WARN]${NC} Failed to create temporary file for build-sharp.sh (non-critical)"
 fi
 
+# Download install-glibc-env.sh (for migration or reinstall)
+GLIBC_ENV_TMPFILE=""
+if GLIBC_ENV_TMPFILE=$(mktemp "$PREFIX/tmp/install-glibc-env.XXXXXX.sh" 2>/dev/null); then
+    if curl -sfL "$REPO_BASE/scripts/install-glibc-env.sh" -o "$GLIBC_ENV_TMPFILE"; then
+        chmod +x "$GLIBC_ENV_TMPFILE"
+        echo -e "${GREEN}[OK]${NC}   install-glibc-env.sh downloaded"
+    else
+        echo -e "${YELLOW}[WARN]${NC} Failed to download install-glibc-env.sh"
+        rm -f "$GLIBC_ENV_TMPFILE"
+        GLIBC_ENV_TMPFILE=""
+    fi
+else
+    echo -e "${YELLOW}[WARN]${NC} Failed to create temporary file for install-glibc-env.sh"
+fi
+
+# Download install-opencode.sh
+OPENCODE_TMPFILE=""
+if OPENCODE_TMPFILE=$(mktemp "$PREFIX/tmp/install-opencode.XXXXXX.sh" 2>/dev/null); then
+    if curl -sfL "$REPO_BASE/scripts/install-opencode.sh" -o "$OPENCODE_TMPFILE"; then
+        chmod +x "$OPENCODE_TMPFILE"
+        echo -e "${GREEN}[OK]${NC}   install-opencode.sh downloaded"
+    else
+        echo -e "${YELLOW}[WARN]${NC} Failed to download install-opencode.sh (non-critical)"
+        rm -f "$OPENCODE_TMPFILE"
+        OPENCODE_TMPFILE=""
+    fi
+else
+    echo -e "${YELLOW}[WARN]${NC} Failed to create temporary file for install-opencode.sh (non-critical)"
+fi
+
 # Download install-ai-tools.sh
 AI_TOOLS_TMPFILE=""
 if AI_TOOLS_TMPFILE=$(mktemp "$PREFIX/tmp/install-ai-tools.XXXXXX.sh" 2>/dev/null); then
@@ -256,22 +290,66 @@ fi
 # ─────────────────────────────────────────────
 step 4 "Updating Environment Variables"
 
-# Run setup-env.sh to refresh .bashrc block
+# Run setup-env.sh to refresh .bashrc block (now glibc-based)
 bash "$TMPFILE"
 rm -f "$TMPFILE"
 
 # Re-export for current session (setup-env.sh runs as subprocess, exports don't propagate)
-export PATH="$HOME/.local/bin:$PATH"
+GLIBC_NODE_DIR="$OPENCLAW_DIR/node"
+export PATH="$GLIBC_NODE_DIR/bin:$HOME/.local/bin:$PATH"
 export TMPDIR="$PREFIX/tmp"
 export TMP="$TMPDIR"
 export TEMP="$TMPDIR"
-export NODE_OPTIONS="-r $HOME/.openclaw-android/patches/bionic-compat.js"
 export CONTAINER=1
-export CFLAGS="-Wno-error=implicit-function-declaration"
-export CXXFLAGS="-include $HOME/.openclaw-android/patches/termux-compat.h"
-export GYP_DEFINES="OS=linux android_ndk_path=$PREFIX"
-export CPATH="$PREFIX/include/glib-2.0:$PREFIX/lib/glib-2.0/include"
 export CLAWDHUB_WORKDIR="$HOME/.openclaw/workspace"
+export OA_GLIBC=1
+
+# ─────────────────────────────────────────────
+# Step 4.5: Migrate from Bionic to glibc (if needed)
+if [ "$IS_GLIBC" = false ]; then
+    echo ""
+    echo -e "${BOLD}[MIGRATE] Bionic → glibc Architecture${NC}"
+    echo "----------------------------------------"
+    echo ""
+    echo "Your installation uses the old Bionic architecture."
+    echo "Migrating to glibc for better compatibility..."
+    echo ""
+
+    # Install glibc environment (pacman, glibc-runner, Node.js)
+    if [ -n "$GLIBC_ENV_TMPFILE" ]; then
+        if bash "$GLIBC_ENV_TMPFILE"; then
+            echo -e "${GREEN}[OK]${NC}   glibc environment installed"
+            IS_GLIBC=true
+        else
+            echo -e "${RED}[FAIL]${NC} glibc environment installation failed"
+            echo "       The update will continue with Bionic architecture."
+            echo "       Re-run 'oa --update' to retry migration."
+        fi
+    else
+        echo -e "${YELLOW}[WARN]${NC} install-glibc-env.sh not available — skipping migration"
+    fi
+
+    # Clean up old Bionic-specific files
+    if [ "$IS_GLIBC" = true ]; then
+        echo ""
+        echo "Cleaning up old Bionic files..."
+
+        # Remove old NODE_OPTIONS (bionic-compat.js is no longer needed)
+        unset NODE_OPTIONS 2>/dev/null || true
+        unset CXXFLAGS 2>/dev/null || true
+        unset GYP_DEFINES 2>/dev/null || true
+        unset CFLAGS 2>/dev/null || true
+        unset CPATH 2>/dev/null || true
+
+        # Re-export glibc PATH (now that glibc node is installed)
+        export PATH="$GLIBC_NODE_DIR/bin:$HOME/.local/bin:$PATH"
+
+        echo -e "${GREEN}[OK]${NC}   Bionic → glibc migration complete"
+    fi
+fi
+
+# Clean up glibc env tmpfile
+[ -n "${GLIBC_ENV_TMPFILE:-}" ] && rm -f "$GLIBC_ENV_TMPFILE"
 
 # ─────────────────────────────────────────────
 step 5 "Updating OpenClaw Package"
@@ -297,10 +375,8 @@ if [ ! -e "$PREFIX/bin/ar" ] && [ -x "$PREFIX/bin/llvm-ar" ]; then
     echo -e "${GREEN}[OK]${NC}   Created ar → llvm-ar symlink"
 fi
 
-# CXXFLAGS, GYP_DEFINES, and CPATH were exported in step 4.
-# npm runs as a child process of this script and inherits those
-# env vars, so sharp's node-gyp build succeeds here — unlike in
-# 'openclaw update', which spawns npm without these env vars set.
+# Set CPATH for native module builds (sharp needs glib-2.0 headers)
+export CPATH="$PREFIX/include/glib-2.0:$PREFIX/lib/glib-2.0/include"
 
 # Compare installed vs latest version to skip unnecessary npm install
 # Use npm list (not openclaw --version) to ensure format matches npm view
@@ -312,7 +388,7 @@ if [ -n "$CURRENT_VER" ] && [ -n "$LATEST_VER" ] && [ "$CURRENT_VER" = "$LATEST_
     echo -e "${GREEN}[OK]${NC}   openclaw $CURRENT_VER is already the latest"
 else
     echo "Updating openclaw npm package... ($CURRENT_VER → $LATEST_VER)"
-    if npm install -g openclaw@latest --no-fund --no-audit; then
+    if npm install -g openclaw@latest --no-fund --no-audit --ignore-scripts; then
         echo -e "${GREEN}[OK]${NC}   openclaw package updated"
         OPENCLAW_UPDATED=true
     else
@@ -325,7 +401,7 @@ fi
 step 6 "Building sharp (image processing)"
 
 if [ "$OPENCLAW_UPDATED" = false ]; then
-    echo -e "${GREEN}[SKIP]${NC} openclaw unchanged \u2014 sharp rebuild not needed"
+    echo -e "${GREEN}[SKIP]${NC} openclaw unchanged — sharp rebuild not needed"
     [ -n "$SHARP_TMPFILE" ] && rm -f "$SHARP_TMPFILE"
 elif [ -n "$SHARP_TMPFILE" ]; then
     bash "$SHARP_TMPFILE"
@@ -386,7 +462,7 @@ if [ -d "$OLD_SKILLS_DIR" ] && [ "$(ls -A "$OLD_SKILLS_DIR" 2>/dev/null)" ]; the
     if rmdir "$OLD_SKILLS_DIR" 2>/dev/null; then
         echo -e "${GREEN}[OK]${NC}   Removed empty ~/skills/"
     else
-        echo -e "${YELLOW}[WARN]${NC} ~/skills/ not empty after migration \u2014 check manually"
+        echo -e "${YELLOW}[WARN]${NC} ~/skills/ not empty after migration — check manually"
     fi
 fi
 
@@ -405,9 +481,25 @@ else
 fi
 
 # ─────────────────────────────────────────────
-step 9 "AI CLI Tools (Optional)"
+step 9 "Installing OpenCode + oh-my-opencode"
 
-if [ -n "$AI_TOOLS_TMPFILE" ]; then
+if [ "$IS_GLIBC" = true ] && [ -n "${OPENCODE_TMPFILE:-}" ]; then
+    if bash "$OPENCODE_TMPFILE"; then
+        echo -e "${GREEN}[OK]${NC}   OpenCode update step complete"
+    else
+        echo -e "${YELLOW}[WARN]${NC} OpenCode installation/update failed (non-critical)"
+    fi
+    rm -f "$OPENCODE_TMPFILE"
+elif [ "$IS_GLIBC" = false ]; then
+    echo -e "${YELLOW}[SKIP]${NC} OpenCode requires glibc architecture — run 'oa --update' after migration"
+    [ -n "${OPENCODE_TMPFILE:-}" ] && rm -f "$OPENCODE_TMPFILE"
+else
+    echo -e "${YELLOW}[SKIP]${NC} install-opencode.sh was not downloaded"
+fi
+
+# AI Tools (Optional)
+echo ""
+if [ -n "${AI_TOOLS_TMPFILE:-}" ]; then
     bash "$AI_TOOLS_TMPFILE" || true
     rm -f "$AI_TOOLS_TMPFILE"
 else
@@ -428,6 +520,7 @@ echo -e "${BOLD}Manage with the 'oa' command:${NC}"
 echo "  oa --update       Update OpenClaw and patches"
 echo "  oa --status       Show installation status"
 echo "  oa ide            Start code-server (browser IDE)"
+echo "  oa opencode       Start OpenCode"
 echo "  oa --uninstall    Remove OpenClaw on Android"
 echo "  oa --help         Show all options"
 echo ""
